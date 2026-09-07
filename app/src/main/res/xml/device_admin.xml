@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Sieve asks for no policy powers it does not need. Being an active admin at all is what
+    prevents uninstall; the empty policy set keeps it from touching passwords, cameras or storage.
+-->
+<device-admin xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-policies />
+</device-admin>
