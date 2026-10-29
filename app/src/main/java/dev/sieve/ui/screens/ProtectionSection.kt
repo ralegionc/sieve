@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -191,7 +192,7 @@ fun ProtectionSection(
     }
 
     Spacer(Modifier.height(12.dp))
-    UninstallProtectionCard(canChange)
+    UninstallProtectionCard(canChange, preferences.tunnelMode == TunnelMode.FULL)
 
     if (pendingMode == LockMode.PASSPHRASE) {
         PassphraseSetupDialog(
@@ -209,15 +210,23 @@ fun ProtectionSection(
  * app at all, so when it is absent this only explains where to read about it.
  */
 @Composable
-private fun UninstallProtectionCard(canChange: Boolean) {
+private fun UninstallProtectionCard(canChange: Boolean, fullTunnel: Boolean) {
     val context = LocalContext.current
     // Recomposition after returning from the system dialog re-reads the real state.
     var isAdmin by remember { mutableStateOf(DeviceAdmin.isActiveAdmin(context)) }
     val isOwner = remember { DeviceAdmin.isDeviceOwner(context) }
+    var uninstallBlocked by remember { mutableStateOf(DeviceAdmin.isUninstallBlocked(context)) }
+    var maximum by remember { mutableStateOf(DeviceAdmin.isMaximumApplied(context)) }
 
     val activate = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
     ) { isAdmin = DeviceAdmin.isActiveAdmin(context) }
+
+    fun reapply(withMaximum: Boolean) {
+        DeviceAdmin.applyOwnerPolicy(context, lockdown = fullTunnel, maximum = withMaximum)
+        uninstallBlocked = DeviceAdmin.isUninstallBlocked(context)
+        maximum = DeviceAdmin.isMaximumApplied(context)
+    }
 
     SettingsCard("Uninstall protection") {
         Row(
@@ -229,7 +238,8 @@ private fun UninstallProtectionCard(canChange: Boolean) {
             Column(Modifier.weight(1f)) {
                 Text(
                     text = when {
-                        isOwner -> "Device owner"
+                        isOwner && uninstallBlocked -> "Device owner, enforcing"
+                        isOwner -> "Device owner, not yet enforcing"
                         isAdmin -> "Device admin active"
                         else -> "Not protected"
                     },
@@ -238,11 +248,17 @@ private fun UninstallProtectionCard(canChange: Boolean) {
                 Spacer(Modifier.height(2.dp))
                 Text(
                     text = when {
-                        isOwner -> "Uninstall is blocked and VPN settings are locked. Only adb " +
-                            "can undo this."
-                        isAdmin -> "Sieve cannot be uninstalled until you deactivate it here."
-                        else -> "Android will not uninstall an active device admin. Granting " +
-                            "this adds a deliberate step before the app can be removed."
+                        isOwner && uninstallBlocked ->
+                            "Uninstall is refused and VPN settings are locked. Only adb undoes it."
+                        isOwner ->
+                            "Sieve is device owner but has applied nothing yet. Enforce to block " +
+                                "uninstall and lock VPN settings."
+                        isAdmin ->
+                            "Uninstall needs deactivating here or in Android settings first. " +
+                                "That is a speed bump, not a wall — anyone can do it in four taps."
+                        else ->
+                            "Android will not uninstall an active device admin. Granting this " +
+                                "adds a deliberate step before the app can be removed."
                     },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -250,7 +266,12 @@ private fun UninstallProtectionCard(canChange: Boolean) {
             }
             Spacer(Modifier.width(12.dp))
             when {
+                isOwner && !uninstallBlocked -> Button(onClick = { reapply(maximum) }) {
+                    Text("Enforce")
+                }
+
                 isOwner -> Unit
+
                 isAdmin -> OutlinedButton(
                     onClick = {
                         DeviceAdmin.deactivate(context)
@@ -263,6 +284,19 @@ private fun UninstallProtectionCard(canChange: Boolean) {
                     Text("Grant")
                 }
             }
+        }
+
+        if (isOwner && uninstallBlocked) {
+            HorizontalDivider()
+            SwitchRow(
+                title = "Also block clearing data and force-stop",
+                subtitle = "Closes the two remaining holes: wiping Sieve's storage to reset the " +
+                    "lock, and force-stopping it. Also blocks safe mode. The cost is that it " +
+                    "applies to every app on the phone, not just this one.",
+                checked = maximum,
+                // Relaxing it back is a weakening change, so it goes through the lock.
+                onCheckedChange = { wanted -> if (wanted || canChange) reapply(wanted) },
+            )
         }
     }
 }

@@ -75,14 +75,42 @@ object DeviceAdmin {
             .onFailure { Log.w(TAG, "Could not remove active admin", it) }
     }
 
+    fun isUninstallBlocked(context: Context): Boolean {
+        val manager = policyManager(context) ?: return false
+        if (!isDeviceOwner(context)) return false
+        return runCatching {
+            manager.isUninstallBlocked(component(context), context.packageName)
+        }.getOrDefault(false)
+    }
+
+    /** True once the restrictions that also cover clearing data and force-stopping are in force. */
+    fun isMaximumApplied(context: Context): Boolean =
+        hasRestriction(context, UserManager.DISALLOW_APPS_CONTROL)
+
+    private fun hasRestriction(context: Context, key: String): Boolean =
+        context.getSystemService(UserManager::class.java)?.hasUserRestriction(key) == true
+
     /**
      * Applies the device-owner restrictions. Returns the ones that took effect.
      *
-     * Lockdown ("block connections without VPN") is deliberately *not* enabled: Sieve routes only
-     * DNS into its tunnel, so lockdown would drop every other packet and leave the phone with no
-     * working connection at all.
+     * [lockdown] pins Sieve as an always-on VPN and blocks traffic while it is down. That is only
+     * safe in full-tunnel mode: a DNS-only tunnel routes nothing else, so lockdown would drop
+     * every other packet and leave the phone with no working connection.
+     *
+     * [maximum] adds `DISALLOW_APPS_CONTROL`, which is what actually closes the "clear the app's
+     * storage" and "force stop it" holes — but it is a device-wide restriction, not one scoped to
+     * Sieve, so it takes those actions away for every app. That is a real cost, and the reason it
+     * is a separate choice rather than part of the default.
+     *
+     * Deliberately *not* applied: `DISALLOW_FACTORY_RESET` and `DISALLOW_DEBUGGING_FEATURES`.
+     * Together they would remove every way back out, and a phone you cannot recover is a worse
+     * outcome than a filter you can eventually defeat.
      */
-    fun applyOwnerPolicy(context: Context): List<String> {
+    fun applyOwnerPolicy(
+        context: Context,
+        lockdown: Boolean = false,
+        maximum: Boolean = false,
+    ): List<String> {
         val manager = policyManager(context) ?: return emptyList()
         if (!isDeviceOwner(context)) return emptyList()
 
@@ -99,11 +127,26 @@ object DeviceAdmin {
         }.onSuccess { applied += "VPN settings locked" }
             .onFailure { Log.w(TAG, "DISALLOW_CONFIG_VPN failed", it) }
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+        runCatching {
+            manager.setAlwaysOnVpnPackage(admin, context.packageName, lockdown)
+        }.onSuccess {
+            applied += if (lockdown) "Always-on with lockdown" else "Pinned as always-on VPN"
+        }.onFailure { Log.w(TAG, "setAlwaysOnVpnPackage failed", it) }
+
+        if (maximum) {
             runCatching {
-                manager.setAlwaysOnVpnPackage(admin, context.packageName, false)
-            }.onSuccess { applied += "Pinned as always-on VPN" }
-                .onFailure { Log.w(TAG, "setAlwaysOnVpnPackage failed", it) }
+                manager.addUserRestriction(admin, UserManager.DISALLOW_APPS_CONTROL)
+            }.onSuccess { applied += "Clearing data and force-stop blocked" }
+                .onFailure { Log.w(TAG, "DISALLOW_APPS_CONTROL failed", it) }
+
+            // Safe mode would otherwise boot with third-party apps disabled, filter included.
+            runCatching {
+                manager.addUserRestriction(admin, UserManager.DISALLOW_SAFE_BOOT)
+            }.onSuccess { applied += "Safe mode blocked" }
+                .onFailure { Log.w(TAG, "DISALLOW_SAFE_BOOT failed", it) }
+        } else {
+            runCatching { manager.clearUserRestriction(admin, UserManager.DISALLOW_APPS_CONTROL) }
+            runCatching { manager.clearUserRestriction(admin, UserManager.DISALLOW_SAFE_BOOT) }
         }
 
         return applied
@@ -117,9 +160,9 @@ object DeviceAdmin {
 
         runCatching { manager.setUninstallBlocked(admin, context.packageName, false) }
         runCatching { manager.clearUserRestriction(admin, UserManager.DISALLOW_CONFIG_VPN) }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-            runCatching { manager.setAlwaysOnVpnPackage(admin, null, false) }
-        }
+        runCatching { manager.clearUserRestriction(admin, UserManager.DISALLOW_APPS_CONTROL) }
+        runCatching { manager.clearUserRestriction(admin, UserManager.DISALLOW_SAFE_BOOT) }
+        runCatching { manager.setAlwaysOnVpnPackage(admin, null, false) }
         runCatching { manager.clearDeviceOwnerApp(context.packageName) }
     }
 }

@@ -165,8 +165,8 @@ the lock.
 
 ### 5. Device owner (adb, requires a factory reset)
 
-The strongest thing Android offers without root. Sieve can then pin itself as always-on, forbid VPN
-reconfiguration outright, and block its own uninstall.
+The strongest thing Android offers without root, and the only level at which deleting the app is
+genuinely prevented rather than merely slowed down.
 
 It can only be granted on a device with no accounts configured, so in practice: factory reset, skip
 the Google account at setup, enable USB debugging, install the APK, then
@@ -175,9 +175,29 @@ the Google account at setup, enable USB debugging, install the APK, then
 adb shell dpm set-device-owner dev.sieve/.vpn.SieveDeviceAdminReceiver
 ```
 
-Open Sieve and the Protection card will show **Device owner**. Undo it with `adb shell dpm
-remove-active-admin dev.sieve/.vpn.SieveDeviceAdminReceiver` — adb is deliberately left as the
-escape hatch, because the alternative is a phone you cannot fix.
+Open Sieve, go to Settings, and press **Enforce** on the Uninstall protection card. That applies:
+
+- `setUninstallBlocked` — the uninstall option is refused everywhere, including Play Store and
+  a long-press on the icon.
+- `DISALLOW_CONFIG_VPN` — VPN settings cannot be changed, so always-on and lockdown cannot be
+  switched off.
+- `setAlwaysOnVpnPackage` — Sieve is pinned as the always-on VPN, with lockdown enabled
+  automatically when you are in full-tunnel mode.
+
+The optional switch underneath adds `DISALLOW_APPS_CONTROL` and `DISALLOW_SAFE_BOOT`, which close
+the last two holes — clearing the app's storage to reset the lock, force-stopping it, and booting
+into safe mode where third-party apps do not run. The catch is that `DISALLOW_APPS_CONTROL` is
+device-wide: you lose force-stop and clear-data for *every* app, not just this one. That is why it
+is a separate choice.
+
+Two restrictions are deliberately **not** applied: `DISALLOW_FACTORY_RESET` and
+`DISALLOW_DEBUGGING_FEATURES`. Together they would remove every way back out, and a phone you
+cannot recover is a worse outcome than a filter you can eventually defeat. So adb stays as the
+escape hatch:
+
+```bash
+adb shell dpm remove-active-admin dev.sieve/.vpn.SieveDeviceAdminReceiver
+```
 
 ### What still gets through
 
@@ -191,8 +211,10 @@ Be honest with yourself about these rather than assuming the app has them covere
 - **DoH to a hardcoded IP.** Strict mode blocks the bootstrap hostnames, which is enough for every
   browser that resolves its provider by name. An app that ships the provider's IP address and
   speaks HTTPS to it directly is indistinguishable from ordinary web traffic, in either mode.
-- **Clearing app storage** resets the lock and the waiting period. Device owner is the only thing
-  that prevents it.
+- **Clearing app storage** resets the lock and the waiting period, and **force-stopping** the app
+  stops filtering until it is opened again. Both are closed by the "Also block clearing data and
+  force-stop" switch, which is device-owner only and applies device-wide rather than to Sieve
+  alone. Without device owner, neither can be prevented.
 - **A second device**, a desktop browser, or a factory reset defeats anything configured here.
   Router-level DNS filtering covers the home network; nothing covers mobile data on another phone.
 - **Domain granularity.** A site that mixes content cannot be partly filtered.
